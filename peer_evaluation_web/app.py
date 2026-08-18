@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import io
-import uuid
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,36 +30,18 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# 학생 명단 시트 헤더
 ROSTER_HEADERS = ["조", "학번", "이름", "학과"]
-LEGACY_EVAL_HEADERS = [
-    "submission_id",
-    "submitted_at",
-    "evaluator_id",
-    "evaluator_name",
-    "group",
-    "target_id",
-    "target_name",
-    "score",
-    "comment",
-]
 
-EVAL_HEADERS = [
-    "submission_id",
-    "submitted_at",
-    "week_id",
-    "week_start",
-    "evaluator_id",
-    "evaluator_name",
-    "group",
-    "target_id",
-    "target_name",
-    "score",
-    "comment",
-]
+# 매주 생성되는 평가 시트의 헤더
+# 예: 시트 이름 = 2026-08-17 (해당 주 월요일)
+WEEKLY_HEADERS = ["학번", "이름", "조", "조원 학번", "조원", "점수", "comment"]
+
+WEEK_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def current_week_context(now: datetime | None = None) -> tuple[str, str, str]:
-    """Return (week_id, week_start, human_label) for the KST Monday-Sunday week."""
+def current_week_context(now: datetime | None = None) -> tuple[str, str]:
+    """Return (sheet_name, human_label) for the KST Monday-Sunday week."""
     if now is None:
         now = datetime.now(ZoneInfo("Asia/Seoul"))
     elif now.tzinfo is None:
@@ -69,19 +51,19 @@ def current_week_context(now: datetime | None = None) -> tuple[str, str, str]:
 
     monday = (now - timedelta(days=now.weekday())).date()
     sunday = monday + timedelta(days=6)
-    week_id = monday.isoformat()
+    sheet_name = monday.isoformat()  # Google Sheet tab: 2026-08-17
     label = f"{monday.strftime('%Y.%m.%d')} ~ {sunday.strftime('%Y.%m.%d')}"
-    return week_id, monday.isoformat(), label
+    return sheet_name, label
 
 
-def week_context_from_submitted_at(value: str) -> tuple[str, str]:
-    """Best-effort migration helper for evaluation rows created by the old app."""
+def week_display(sheet_name: str, current_week: str | None = None) -> str:
     try:
-        dt = datetime.fromisoformat(str(value))
-        week_id, week_start, _ = current_week_context(dt)
-        return week_id, week_start
+        monday = datetime.fromisoformat(sheet_name).date()
+        sunday = monday + timedelta(days=6)
+        suffix = "  ← 이번 주" if current_week and sheet_name == current_week else ""
+        return f"{monday.strftime('%Y.%m.%d')} ~ {sunday.strftime('%Y.%m.%d')}{suffix}"
     except Exception:
-        return "legacy", ""
+        return sheet_name
 
 
 def secret_ready() -> bool:
@@ -114,32 +96,34 @@ def get_or_create_worksheet(title: str, rows: int, cols: int):
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
-def ensure_eval_sheet():
-    ws = get_or_create_worksheet("evaluations", rows=3000, cols=len(EVAL_HEADERS) + 2)
+def worksheet_exists(title: str) -> bool:
+    try:
+        open_spreadsheet().worksheet(title)
+        return True
+    except gspread.WorksheetNotFound:
+        return False
+
+
+def ensure_week_sheet(week_sheet: str):
+    """Create the current week's tab and header if needed."""
+    ws = get_or_create_worksheet(week_sheet, rows=1000, cols=len(WEEKLY_HEADERS) + 2)
     first_row = ws.row_values(1)
     if not first_row:
-        ws.append_row(EVAL_HEADERS, value_input_option="RAW")
-        return ws
+        ws.append_row(WEEKLY_HEADERS, value_input_option="RAW")
+    elif first_row[: len(WEEKLY_HEADERS)] != WEEKLY_HEADERS:
+        raise RuntimeError(
+            f"'{week_sheet}' 시트의 헤더가 프로그램 형식과 다릅니다. "
+            f"첫 행을 {WEEKLY_HEADERS} 로 맞춰 주세요."
+        )
+    return ws
 
-    if first_row[: len(EVAL_HEADERS)] == EVAL_HEADERS:
-        return ws
 
-    # 구버전(주차 열이 없던 버전) 데이터가 있다면 자동으로 주차 정보를 붙여 마이그레이션한다.
-    if first_row[: len(LEGACY_EVAL_HEADERS)] == LEGACY_EVAL_HEADERS:
-        values = ws.get_all_values()[1:]
-        migrated = []
-        for row in values:
-            row = list(row) + [""] * (len(LEGACY_EVAL_HEADERS) - len(row))
-            row = row[: len(LEGACY_EVAL_HEADERS)]
-            week_id, week_start = week_context_from_submitted_at(row[1])
-            migrated.append([row[0], row[1], week_id, week_start] + row[2:])
-        ws.clear()
-        ws.append_row(EVAL_HEADERS, value_input_option="RAW")
-        if migrated:
-            ws.append_rows(migrated, value_input_option="RAW")
-        return ws
-
-    raise RuntimeError("evaluations 시트의 헤더가 프로그램 형식과 다릅니다.")
+def list_week_sheets() -> list[str]:
+    """Return weekly tab names such as 2026-08-17."""
+    return sorted(
+        [ws.title for ws in open_spreadsheet().worksheets() if WEEK_SHEET_RE.match(ws.title)],
+        reverse=True,
+    )
 
 
 def read_roster() -> pd.DataFrame:
@@ -162,16 +146,29 @@ def read_roster() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def read_evaluations() -> pd.DataFrame:
-    ws = ensure_eval_sheet()
-    records = ws.get_all_records(expected_headers=EVAL_HEADERS)
-    if not records:
-        return pd.DataFrame(columns=EVAL_HEADERS)
-    df = pd.DataFrame(records)
-    for col in EVAL_HEADERS:
-        if col not in df.columns:
-            df[col] = ""
-    return df[EVAL_HEADERS]
+def read_week_evaluations(week_sheet: str) -> pd.DataFrame:
+    if not worksheet_exists(week_sheet):
+        return pd.DataFrame(columns=WEEKLY_HEADERS)
+
+    ws = open_spreadsheet().worksheet(week_sheet)
+    values = ws.get_all_values()
+    if not values:
+        return pd.DataFrame(columns=WEEKLY_HEADERS)
+
+    header = values[0]
+    if header[: len(WEEKLY_HEADERS)] != WEEKLY_HEADERS:
+        raise RuntimeError(f"'{week_sheet}' 시트의 헤더가 프로그램 형식과 다릅니다.")
+
+    rows = values[1:]
+    normalized_rows = []
+    for row in rows:
+        row = list(row) + [""] * (len(WEEKLY_HEADERS) - len(row))
+        normalized_rows.append(row[: len(WEEKLY_HEADERS)])
+
+    if not normalized_rows:
+        return pd.DataFrame(columns=WEEKLY_HEADERS)
+
+    return pd.DataFrame(normalized_rows, columns=WEEKLY_HEADERS)
 
 
 def normalize_uploaded_roster(uploaded_file) -> pd.DataFrame:
@@ -193,7 +190,6 @@ def normalize_uploaded_roster(uploaded_file) -> pd.DataFrame:
         df[col] = df[col].fillna("").astype(str).str.strip()
     df = df[(df["조"] != "") & (df["학번"] != "") & (df["이름"] != "")]
 
-    # Excel에서 숫자 학번/조가 1234.0처럼 읽힌 경우만 정리
     df["학번"] = df["학번"].str.replace(r"\.0$", "", regex=True)
     df["조"] = df["조"].str.replace(r"\.0$", "", regex=True)
 
@@ -218,43 +214,35 @@ def save_roster(df: pd.DataFrame) -> None:
     ws.append_rows(values, value_input_option="RAW")
 
 
-def evaluator_has_submitted(
-    evaluator_id: str,
-    eval_df: pd.DataFrame | None = None,
-    week_id: str | None = None,
-) -> bool:
-    if eval_df is None:
-        eval_df = read_evaluations()
-    if eval_df.empty:
+def evaluator_has_submitted(evaluator_id: str, week_sheet: str | None = None) -> bool:
+    if week_sheet is None:
+        week_sheet, _ = current_week_context()
+    df = read_week_evaluations(week_sheet)
+    if df.empty:
         return False
-    if week_id is None:
-        week_id, _, _ = current_week_context()
-    scoped = eval_df[eval_df["week_id"].astype(str) == str(week_id)]
-    return evaluator_id in set(scoped["evaluator_id"].astype(str))
+    return str(evaluator_id) in set(df["학번"].astype(str).str.strip())
 
 
-def append_evaluation_rows(student: pd.Series, targets: pd.DataFrame, scores: dict, comments: dict) -> None:
-    ws = ensure_eval_sheet()
-    week_id, week_start, _ = current_week_context()
+def append_evaluation_rows(
+    student: pd.Series,
+    targets: pd.DataFrame,
+    scores: dict,
+    comments: dict,
+) -> None:
+    week_sheet, _ = current_week_context()
+    ws = ensure_week_sheet(week_sheet)
 
-    # 제출 직전 같은 주차에 이미 제출했는지 다시 확인한다.
-    fresh = read_evaluations()
-    if evaluator_has_submitted(str(student["학번"]), fresh, week_id):
+    # 제출 직전 재확인: 같은 주차에 한 번만 제출 가능
+    if evaluator_has_submitted(str(student["학번"]), week_sheet):
         raise ValueError("이번 주 조원 평가는 이미 제출했습니다.")
 
-    submission_id = str(uuid.uuid4())
-    submitted_at = datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
     rows = []
-    for _, target in targets.iterrows():
+    for idx, (_, target) in enumerate(targets.iterrows()):
         target_id = str(target["학번"])
         rows.append(
             [
-                submission_id,
-                submitted_at,
-                week_id,
-                week_start,
                 str(student["학번"]),
-                str(student["이름"]),
+                str(student["이름"]) if idx == 0 else "",  # 이름은 첫 행에만 표시
                 str(student["조"]),
                 target_id,
                 str(target["이름"]),
@@ -262,32 +250,28 @@ def append_evaluation_rows(student: pd.Series, targets: pd.DataFrame, scores: di
                 str(comments.get(target_id, "")).strip(),
             ]
         )
+
     ws.append_rows(rows, value_input_option="RAW")
 
 
-def make_result_excel(roster: pd.DataFrame, eval_df: pd.DataFrame) -> bytes:
+def make_result_excel(roster: pd.DataFrame, week_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
-    work = eval_df.copy()
+    work = week_df.copy()
+
     if not work.empty:
-        work["score"] = pd.to_numeric(work["score"], errors="coerce")
+        work["점수"] = pd.to_numeric(work["점수"], errors="coerce")
         summary = (
-            work.groupby(["target_id", "target_name", "group"], as_index=False)["score"]
-            .agg(["count", "mean", "min", "max"])
-            .reset_index()
-            .rename(
-                columns={
-                    "target_id": "학번",
-                    "target_name": "이름",
-                    "group": "조",
-                    "count": "평가수",
-                    "mean": "평균",
-                    "min": "최저",
-                    "max": "최고",
-                }
+            work.groupby(["조원 학번", "조원", "조"], as_index=False)
+            .agg(
+                평가수=("점수", "count"),
+                평균=("점수", "mean"),
+                최저=("점수", "min"),
+                최고=("점수", "max"),
             )
+            .rename(columns={"조원 학번": "학번", "조원": "이름"})
         )
         summary["평균"] = summary["평균"].round(2)
-        submitted = set(work["evaluator_id"].astype(str))
+        submitted = set(work["학번"].astype(str))
     else:
         summary = pd.DataFrame(columns=["학번", "이름", "조", "평가수", "평균", "최저", "최고"])
         submitted = set()
@@ -309,9 +293,27 @@ def make_result_excel(roster: pd.DataFrame, eval_df: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
+def make_all_weeks_excel(roster: pd.DataFrame, week_names: list[str]) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        roster.to_excel(writer, sheet_name="학생 명단", index=False)
+        writer.sheets["학생 명단"].freeze_panes(1, 0)
+        writer.sheets["학생 명단"].set_column(0, max(0, writer.sheets["학생 명단"].dim_colmax), 16)
+
+        for week_name in sorted(week_names):
+            df = read_week_evaluations(week_name)
+            # Excel 탭명은 31자 제한이 있으므로 YYYY-MM-DD 그대로 사용
+            df.to_excel(writer, sheet_name=week_name, index=False)
+            ws = writer.sheets[week_name]
+            ws.freeze_panes(1, 0)
+            ws.set_column(0, max(0, ws.dim_colmax), 16)
+
+    return output.getvalue()
+
+
 def student_page():
     st.title("팀 프로젝트 조원 평가")
-    week_id, _, week_label = current_week_context()
+    week_sheet, week_label = current_week_context()
     st.caption("평가 내용은 다른 학생에게 공개되지 않으며 담당자만 확인할 수 있습니다.")
     st.info(f"📅 **이번 평가 기간:** {week_label} (월요일 00:00에 새 주차로 자동 전환)")
 
@@ -338,7 +340,7 @@ def student_page():
                 st.error("학번과 이름이 학생 명단과 일치하지 않습니다.")
             else:
                 student = matched.iloc[0].to_dict()
-                if evaluator_has_submitted(student_id, week_id=week_id):
+                if evaluator_has_submitted(student_id, week_sheet):
                     st.warning("이번 주 조원 평가를 이미 제출했습니다. 다음 주 월요일부터 다시 평가할 수 있습니다.")
                 else:
                     st.session_state.student = student
@@ -348,8 +350,7 @@ def student_page():
     student = pd.Series(st.session_state.student)
     student_id = str(student["학번"])
 
-    # 다른 브라우저/탭에서 방금 제출했을 수도 있으므로 재확인
-    if evaluator_has_submitted(student_id, week_id=week_id):
+    if evaluator_has_submitted(student_id, week_sheet):
         st.success("이번 주 조원 평가가 이미 제출되었습니다. 감사합니다.")
         if st.button("처음 화면으로"):
             st.session_state.student = None
@@ -438,7 +439,6 @@ def admin_page():
         st.rerun()
 
     roster = read_roster()
-    eval_df = read_evaluations()
 
     st.subheader("1. 학생 명단")
     if roster.empty:
@@ -458,7 +458,8 @@ def admin_page():
         else:
             st.write("업로드할 명단 미리보기")
             st.dataframe(new_roster, hide_index=True, use_container_width=True)
-            if not eval_df.empty:
+            existing_weeks = list_week_sheets()
+            if existing_weeks:
                 st.error("이미 평가 데이터가 존재하므로 명단을 교체할 수 없습니다. 수업 중 명단 불일치를 방지하기 위한 보호 기능입니다.")
             elif st.button("이 명단을 Google Sheet에 저장", type="primary"):
                 save_roster(new_roster)
@@ -471,46 +472,24 @@ def admin_page():
         st.info("학생 명단을 먼저 등록하세요.")
         return
 
-    current_week_id, _, current_week_label = current_week_context()
-
-    available_weeks = []
-    if not eval_df.empty:
-        available_weeks = [
-            w for w in eval_df["week_id"].astype(str).dropna().unique().tolist() if w
-        ]
-    if current_week_id not in available_weeks:
-        available_weeks.append(current_week_id)
+    current_week, current_week_label = current_week_context()
+    available_weeks = list_week_sheets()
+    if current_week not in available_weeks:
+        available_weeks.append(current_week)
     available_weeks = sorted(available_weeks, reverse=True)
-
-    def week_display(w: str) -> str:
-        if w == "legacy":
-            return "구버전 데이터"
-        try:
-            monday = datetime.fromisoformat(w).date()
-            sunday = monday + timedelta(days=6)
-            suffix = "  ← 이번 주" if w == current_week_id else ""
-            return f"{monday.strftime('%Y.%m.%d')} ~ {sunday.strftime('%Y.%m.%d')}{suffix}"
-        except Exception:
-            return w
 
     selected_week = st.selectbox(
         "조회할 평가 주차",
         available_weeks,
-        index=available_weeks.index(current_week_id),
-        format_func=week_display,
+        index=available_weeks.index(current_week),
+        format_func=lambda w: week_display(w, current_week),
     )
-    if selected_week == current_week_id:
-        st.caption(f"현재 평가 기간: {current_week_label} · 매주 월요일 00:00(한국시간)에 자동으로 새 주차가 시작됩니다.")
 
-    if eval_df.empty:
-        period_df = pd.DataFrame(columns=EVAL_HEADERS)
-    else:
-        period_df = eval_df[eval_df["week_id"].astype(str) == str(selected_week)].copy()
+    if selected_week == current_week:
+        st.caption(f"현재 평가 기간: {current_week_label} · 매주 월요일 00:00(한국시간)에 새 날짜 시트가 자동으로 시작됩니다.")
 
-    if period_df.empty:
-        submitted_ids = set()
-    else:
-        submitted_ids = set(period_df["evaluator_id"].astype(str))
+    period_df = read_week_evaluations(selected_week)
+    submitted_ids = set(period_df["학번"].astype(str)) if not period_df.empty else set()
 
     total = len(roster)
     submitted_count = len(submitted_ids)
@@ -530,16 +509,16 @@ def admin_page():
 
     if not period_df.empty:
         work = period_df.copy()
-        work["score"] = pd.to_numeric(work["score"], errors="coerce")
+        work["점수"] = pd.to_numeric(work["점수"], errors="coerce")
         summary = (
-            work.groupby(["target_id", "target_name", "group"], as_index=False)
+            work.groupby(["조원 학번", "조원", "조"], as_index=False)
             .agg(
-                평가수=("score", "count"),
-                평균=("score", "mean"),
-                최저=("score", "min"),
-                최고=("score", "max"),
+                평가수=("점수", "count"),
+                평균=("점수", "mean"),
+                최저=("점수", "min"),
+                최고=("점수", "max"),
             )
-            .rename(columns={"target_id": "학번", "target_name": "이름", "group": "조"})
+            .rename(columns={"조원 학번": "학번", "조원": "이름"})
         )
         summary["평균"] = summary["평균"].round(2)
 
@@ -558,15 +537,20 @@ def admin_page():
         use_container_width=True,
     )
 
-    if not eval_df.empty:
-        history_bytes = make_result_excel(roster, eval_df)
+    real_weeks = list_week_sheets()
+    if real_weeks:
+        history_bytes = make_all_weeks_excel(roster, real_weeks)
         st.download_button(
-            "전체 주차 누적 데이터 Excel 다운로드",
+            "전체 주차 결과 Excel 다운로드",
             data=history_bytes,
             file_name=f"peer_evaluation_all_weeks_{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%Y%m%d_%H%M')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
+
+    # 이전 버전의 evaluations 시트는 새 저장 방식에서는 사용하지 않음.
+    if worksheet_exists("evaluations"):
+        st.info("기존 'evaluations' 시트는 새 버전에서는 사용하지 않습니다. 테스트 데이터라면 Google Sheet에서 직접 삭제해도 됩니다.")
 
     if st.button("Google Sheet에서 최신 데이터 다시 불러오기"):
         st.rerun()
@@ -577,7 +561,7 @@ if not secret_ready():
     st.error("배포 설정이 아직 완료되지 않았습니다.")
     st.markdown(
         "관리자는 Streamlit Cloud의 **Secrets**에 `SPREADSHEET_ID`, `ADMIN_PASSWORD`, "
-        "`[gcp_service_account]` 정보를 등록해야 합니다. 자세한 내용은 함께 제공된 `README_KO.md`를 확인하세요."
+        "`[gcp_service_account]` 정보를 등록해야 합니다."
     )
     st.stop()
 
