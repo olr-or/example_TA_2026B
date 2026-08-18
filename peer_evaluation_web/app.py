@@ -38,7 +38,7 @@ st.markdown(
       }
       .block-container {
         max-width: 760px;
-        padding-top: 3.4rem;
+        padding-top: 4.4rem;
         padding-bottom: 4rem;
       }
       .student-hero { margin: 0 0 1.25rem 0; }
