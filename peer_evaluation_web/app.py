@@ -92,20 +92,33 @@ st.markdown(
         border-color: var(--pink-400) !important;
         box-shadow: 0 0 0 1px var(--pink-400) !important;
       }
-      div.stButton > button[kind="primary"],
-      div[data-testid="stFormSubmitButton"] > button[kind="primary"] {
-        background: linear-gradient(135deg, var(--pink-500), var(--pink-600)) !important;
+      /* Pink primary buttons */
+      button[kind="primary"],
+      button[kind="primaryFormSubmit"],
+      div[data-testid="stFormSubmitButton"] button,
+      button[data-testid="stBaseButton-primary"],
+      button[data-testid="stBaseButton-primaryFormSubmit"] {
+        background: linear-gradient(135deg, #ee6f9c, #df5c8c) !important;
+        background-color: #ee6f9c !important;
         border: none !important;
         color: white !important;
         border-radius: 14px !important;
-        min-height: 3rem;
-        font-weight: 700;
-        box-shadow: 0 8px 20px rgba(223, 92, 140, .22);
+        min-height: 3rem !important;
+        font-weight: 700 !important;
+        box-shadow: 0 8px 20px rgba(223, 92, 140, .22) !important;
       }
-      div.stButton > button[kind="primary"]:hover,
-      div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
+      /* Pink primary button hover */
+      button[kind="primary"]:hover,
+      button[kind="primaryFormSubmit"]:hover,
+      div[data-testid="stFormSubmitButton"] button:hover,
+      button[data-testid="stBaseButton-primary"]:hover,
+      button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+        background: linear-gradient(135deg, #f58aae, #ee6f9c) !important;
+        background-color: #ee6f9c !important;
+        border: none !important;
+        color: white !important;
         transform: translateY(-1px);
-        box-shadow: 0 10px 24px rgba(223, 92, 140, .28);
+        box-shadow: 0 10px 24px rgba(223, 92, 140, .28) !important;
       }
       div[data-testid="stMetric"] {
         background: #fffafb;
