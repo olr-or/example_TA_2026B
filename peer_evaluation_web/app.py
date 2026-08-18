@@ -529,7 +529,7 @@ def student_page():
           <div class="student-title">Peer Evaluation</div>
           <p class="student-subtitle">
             Please evaluate each teammate's contribution to the project.<br>
-            Your responses will not be shared with other students and can only be reviewed by the course staff.
+            Your responses will not be shared with other students and will only be reviewed by the course TAs.
           </p>
         </div>
         """,
@@ -537,14 +537,14 @@ def student_page():
     )
 
     st.markdown(
-        f"""<div class="week-card">🌷 <strong>Evaluation period</strong> &nbsp; {week_label}<br>
+        f"""<div class="week-card">🎀 <strong>Evaluation period</strong> &nbsp; {week_label}<br>
         <span style="font-size:.9rem; opacity:.78;">A new evaluation week starts automatically every Monday at 00:00 KST.</span></div>""",
         unsafe_allow_html=True,
     )
 
     roster = read_roster()
     if roster.empty:
-        st.info("The student roster has not been registered yet. Please contact the course staff.")
+        st.info("The student roster has not been registered yet. Please contact the course TAs.")
         return
 
     if "student" not in st.session_state:
@@ -661,11 +661,11 @@ def student_page():
             except ValueError as exc:
                 st.warning(str(exc))
             except Exception as exc:
-                st.error("An error occurred while saving the evaluation. Please contact the course staff.")
+                st.error("An error occurred while saving the evaluation. Please contact the course TAs.")
                 st.exception(exc)
             else:
                 st.session_state.student = None
-                st.toast("Evaluation submitted 🌷")
+                st.toast("Evaluation submitted 🎀")
                 st.markdown(
                     """
                     <div class="success-card">
