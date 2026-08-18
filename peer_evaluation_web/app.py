@@ -38,7 +38,7 @@ st.markdown(
       }
       .block-container {
         max-width: 760px;
-        padding-top: 2.4rem;
+        padding-top: 3.4rem;
         padding-bottom: 4rem;
       }
       .student-hero { margin: 0 0 1.25rem 0; }
@@ -178,7 +178,7 @@ st.markdown(
       }
       div[data-testid="stAlert"] { border-radius: 16px; }
       @media (max-width: 640px) {
-        .block-container { padding-top: 1.4rem; }
+        .block-container { padding-top: 3.4rem; }
         .student-title { font-size: 2.15rem; }
         div[data-testid="stForm"] { padding: 1rem 1rem .55rem; }
         .peer-card { padding: 1rem 1rem .4rem; }
