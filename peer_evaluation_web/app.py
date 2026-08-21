@@ -565,8 +565,8 @@ def student_page():
 
     if st.session_state.student is None:
         with st.form("login_form"):
-            student_id = st.text_input("Student ID", placeholder="e.g. 2023133001").strip()
-            student_name = st.text_input("Name", placeholder="e.g. Hyuna Kim").strip()
+            student_id = st.text_input("Student ID", placeholder="Your Student ID").strip()
+            student_name = st.text_input("Name", placeholder="Your Name").strip()
             login = st.form_submit_button("Start Evaluation", type="primary", use_container_width=True)
 
         if login:
