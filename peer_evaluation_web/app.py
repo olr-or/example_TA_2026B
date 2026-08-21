@@ -188,11 +188,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Student roster sheet headers
 ROSTER_HEADERS = ["Group", "Student ID", "Name", "Department"]
 
-# Headers for the weekly evaluation sheets
-# Example: sheet name = 2026-08-17 (Monday of the corresponding week)
 WEEKLY_HEADERS = [
     "Student ID",
     "Evaluator Name",
@@ -204,7 +201,6 @@ WEEKLY_HEADERS = [
     "Attendance",
 ]
 
-# Legacy headers are accepted for backward compatibility.
 LEGACY_WEEKLY_HEADERS = [
     "\ud559\ubc88",
     "\uc774\ub984",
@@ -222,6 +218,11 @@ ROSTER_HEADER_ALIASES = {
 }
 
 WEEK_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+EVALUATION_OPEN_AT = datetime(
+    2026, 9, 2, 17, 0,
+    tzinfo=ZoneInfo("Asia/Seoul"),
+)
 
 
 def current_week_context(now: datetime | None = None) -> tuple[str, str]:
@@ -523,7 +524,6 @@ def make_all_weeks_excel(roster: pd.DataFrame, week_names: list[str]) -> bytes:
 
         for week_name in sorted(week_names):
             df = read_week_evaluations(week_name)
-            # Excel worksheet names are limited to 31 characters, so YYYY-MM-DD is used as-is.
             df.to_excel(writer, sheet_name=week_name, index=False)
             ws = writer.sheets[week_name]
             ws.freeze_panes(1, 0)
@@ -548,6 +548,15 @@ def student_page():
         """,
         unsafe_allow_html=True,
     )
+
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+
+    if now < EVALUATION_OPEN_AT:
+        st.session_state.student = None
+        st.info(
+            "Peer Evaluation will open on September 2, 2026 at 17:00 KST."
+        )
+        return
 
     st.markdown(
         f"""<div class="week-card">🎀 <strong>Evaluation period</strong> &nbsp; {week_label}<br>
