@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hmac
 import io
+import queue
+import random
 import re
+import threading
+import time as time_module
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,6 +14,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
+from googleapiclient.errors import HttpError
 
 
 st.set_page_config(
@@ -225,6 +230,51 @@ EVALUATION_OPEN_AT = datetime(
 )
 
 
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+
+
+def _http_status_from_exception(exc: Exception):
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+
+    if status is None:
+        resp = getattr(exc, "resp", None)
+        status = getattr(resp, "status", None)
+
+    try:
+        return int(status) if status is not None else None
+    except Exception:
+        return None
+
+
+def api_call_with_backoff(func, *, attempts: int = 7):
+    for attempt in range(attempts):
+        try:
+            return func()
+        except (gspread.exceptions.APIError, HttpError) as exc:
+            status = _http_status_from_exception(exc)
+            if status not in RETRYABLE_HTTP_STATUS or attempt == attempts - 1:
+                raise
+
+            delay = min((2 ** attempt) + random.uniform(0.0, 0.8), 20.0)
+            time_module.sleep(delay)
+
+
+@st.cache_resource(show_spinner=False)
+def submission_state():
+    return {
+        "lock": threading.RLock(),
+        "submitted": set(),
+    }
+
+
+def clear_read_caches():
+    read_roster.clear()
+    read_week_evaluations.clear()
+    list_week_sheets.clear()
+    worksheet_exists.clear()
+
+
 def current_week_context(now: datetime | None = None) -> tuple[str, str]:
     """Return (sheet_name, human_label) for the KST Monday-Sunday week."""
     if now is None:
@@ -270,39 +320,44 @@ def open_spreadsheet():
     ]
     credentials = Credentials.from_service_account_info(info, scopes=scopes)
     client = gspread.authorize(credentials)
-    return client.open_by_key(st.secrets["SPREADSHEET_ID"])
+    return api_call_with_backoff(lambda: client.open_by_key(st.secrets["SPREADSHEET_ID"]))
 
 
+@st.cache_resource(show_spinner=False)
 def get_or_create_worksheet(title: str, rows: int, cols: int):
     spreadsheet = open_spreadsheet()
     try:
-        return spreadsheet.worksheet(title)
+        return api_call_with_backoff(lambda: spreadsheet.worksheet(title))
     except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+        return api_call_with_backoff(
+            lambda: spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+        )
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def worksheet_exists(title: str) -> bool:
     try:
-        open_spreadsheet().worksheet(title)
+        api_call_with_backoff(lambda: open_spreadsheet().worksheet(title))
         return True
     except gspread.WorksheetNotFound:
         return False
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_week_sheet(week_sheet: str):
     """Create the current week's tab and migrate legacy headers if needed."""
     ws = get_or_create_worksheet(week_sheet, rows=1000, cols=len(WEEKLY_HEADERS) + 2)
-    first_row = ws.row_values(1)
+    first_row = api_call_with_backoff(lambda: ws.row_values(1))
 
     if not first_row:
-        ws.append_row(WEEKLY_HEADERS, value_input_option="RAW")
+        api_call_with_backoff(lambda: ws.append_row(WEEKLY_HEADERS, value_input_option="RAW"))
         return ws
 
     if first_row[: len(WEEKLY_HEADERS)] == WEEKLY_HEADERS:
         return ws
 
     if first_row[: len(LEGACY_WEEKLY_HEADERS)] == LEGACY_WEEKLY_HEADERS:
-        ws.update("A1:H1", [WEEKLY_HEADERS], value_input_option="RAW")
+        api_call_with_backoff(lambda: ws.update("A1:H1", [WEEKLY_HEADERS], value_input_option="RAW"))
         return ws
 
     raise RuntimeError(
@@ -310,17 +365,19 @@ def ensure_week_sheet(week_sheet: str):
         f"Please set the first row to {WEEKLY_HEADERS}."
     )
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_week_sheets() -> list[str]:
-    """Return weekly tab names such as 2026-08-17."""
+    worksheets = api_call_with_backoff(open_spreadsheet().worksheets)
     return sorted(
-        [ws.title for ws in open_spreadsheet().worksheets() if WEEK_SHEET_RE.match(ws.title)],
+        [ws.title for ws in worksheets if WEEK_SHEET_RE.match(ws.title)],
         reverse=True,
     )
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def read_roster() -> pd.DataFrame:
     ws = get_or_create_worksheet("students", rows=200, cols=8)
-    values = ws.get_all_values()
+    values = api_call_with_backoff(ws.get_all_values)
     if not values:
         return pd.DataFrame(columns=ROSTER_HEADERS)
 
@@ -343,19 +400,23 @@ def read_roster() -> pd.DataFrame:
     ]
     return mapped.reset_index(drop=True)
 
+@st.cache_data(ttl=20, show_spinner=False)
 def read_week_evaluations(week_sheet: str) -> pd.DataFrame:
-    if not worksheet_exists(week_sheet):
+    try:
+        ws = api_call_with_backoff(lambda: open_spreadsheet().worksheet(week_sheet))
+    except gspread.WorksheetNotFound:
         return pd.DataFrame(columns=WEEKLY_HEADERS)
 
-    ws = open_spreadsheet().worksheet(week_sheet)
-    values = ws.get_all_values()
+    values = api_call_with_backoff(ws.get_all_values)
     if not values:
         return pd.DataFrame(columns=WEEKLY_HEADERS)
 
     header = values[0]
 
     if header[: len(LEGACY_WEEKLY_HEADERS)] == LEGACY_WEEKLY_HEADERS:
-        ws.update("A1:H1", [WEEKLY_HEADERS], value_input_option="RAW")
+        api_call_with_backoff(
+            lambda: ws.update("A1:H1", [WEEKLY_HEADERS], value_input_option="RAW")
+        )
         header = WEEKLY_HEADERS
 
     if header[: len(WEEKLY_HEADERS)] != WEEKLY_HEADERS:
@@ -374,6 +435,7 @@ def read_week_evaluations(week_sheet: str) -> pd.DataFrame:
         return pd.DataFrame(columns=WEEKLY_HEADERS)
 
     return pd.DataFrame(normalized_rows, columns=WEEKLY_HEADERS)
+
 
 def normalize_uploaded_roster(uploaded_file) -> pd.DataFrame:
     xls = pd.ExcelFile(uploaded_file)
@@ -430,18 +492,120 @@ def normalize_uploaded_roster(uploaded_file) -> pd.DataFrame:
 
 def save_roster(df: pd.DataFrame) -> None:
     ws = get_or_create_worksheet("students", rows=max(200, len(df) + 20), cols=8)
-    ws.clear()
+    api_call_with_backoff(ws.clear)
     values = [ROSTER_HEADERS] + df[ROSTER_HEADERS].fillna("").astype(str).values.tolist()
-    ws.append_rows(values, value_input_option="RAW")
+    api_call_with_backoff(
+        lambda: ws.append_rows(values, value_input_option="RAW")
+    )
+    clear_read_caches()
 
 
 def evaluator_has_submitted(evaluator_id: str, week_sheet: str | None = None) -> bool:
     if week_sheet is None:
         week_sheet, _ = current_week_context()
+
+    key = (str(evaluator_id).strip(), str(week_sheet).strip())
+    state = submission_state()
+
+    with state["lock"]:
+        if key in state["submitted"]:
+            return True
+
     df = read_week_evaluations(week_sheet)
     if df.empty:
         return False
-    return str(evaluator_id) in set(df["Student ID"].astype(str).str.strip())
+
+    exists = key[0] in set(df["Student ID"].astype(str).str.strip())
+
+    if exists:
+        with state["lock"]:
+            state["submitted"].add(key)
+
+    return exists
+
+
+class EvaluationWriteBatcher:
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._worker,
+            name="peer-evaluation-sheet-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, week_sheet: str, evaluator_key: tuple, rows: list[list]):
+        item = {
+            "week_sheet": week_sheet,
+            "evaluator_key": evaluator_key,
+            "rows": rows,
+            "done": threading.Event(),
+            "error": None,
+        }
+
+        state = submission_state()
+        with state["lock"]:
+            if evaluator_key in state["submitted"]:
+                raise ValueError("You have already submitted this week's peer evaluation.")
+            state["submitted"].add(evaluator_key)
+
+        self._queue.put(item)
+
+        if not item["done"].wait(timeout=45):
+            with state["lock"]:
+                state["submitted"].discard(evaluator_key)
+            raise TimeoutError("Saving took too long. Please try again in a moment.")
+
+        if item["error"] is not None:
+            raise item["error"]
+
+    def _worker(self):
+        while True:
+            first = self._queue.get()
+            batch = [first]
+            deadline = time_module.monotonic() + 0.8
+
+            while len(batch) < 100:
+                remaining = deadline - time_module.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(self._queue.get(timeout=remaining))
+                except queue.Empty:
+                    break
+
+            groups = {}
+            for item in batch:
+                groups.setdefault(item["week_sheet"], []).append(item)
+
+            for week_sheet, items in groups.items():
+                state = submission_state()
+                try:
+                    ws = ensure_week_sheet(week_sheet)
+                    combined_rows = []
+                    for item in items:
+                        combined_rows.extend(item["rows"])
+
+                    api_call_with_backoff(
+                        lambda ws=ws, combined_rows=combined_rows: ws.append_rows(
+                            combined_rows,
+                            value_input_option="RAW",
+                        )
+                    )
+                except Exception as exc:
+                    with state["lock"]:
+                        for item in items:
+                            state["submitted"].discard(item["evaluator_key"])
+                            item["error"] = exc
+                            item["done"].set()
+                else:
+                    for item in items:
+                        item["done"].set()
+
+
+@st.cache_resource(show_spinner=False)
+def evaluation_write_batcher():
+    return EvaluationWriteBatcher()
 
 
 def append_evaluation_rows(
@@ -452,9 +616,9 @@ def append_evaluation_rows(
     attendance: dict,
 ) -> None:
     week_sheet, _ = current_week_context()
-    ws = ensure_week_sheet(week_sheet)
+    evaluator_id = str(student["Student ID"]).strip()
 
-    if evaluator_has_submitted(str(student["Student ID"]), week_sheet):
+    if evaluator_has_submitted(evaluator_id, week_sheet):
         raise ValueError("You have already submitted this week's peer evaluation.")
 
     rows = []
@@ -462,7 +626,7 @@ def append_evaluation_rows(
         target_id = str(target["Student ID"])
         rows.append(
             [
-                str(student["Student ID"]),
+                evaluator_id,
                 str(student["Name"]) if idx == 0 else "",
                 str(student["Group"]),
                 target_id,
@@ -473,7 +637,12 @@ def append_evaluation_rows(
             ]
         )
 
-    ws.append_rows(rows, value_input_option="RAW")
+    evaluation_write_batcher().submit(
+        week_sheet=week_sheet,
+        evaluator_key=(evaluator_id, week_sheet),
+        rows=rows,
+    )
+
 
 def make_result_excel(roster: pd.DataFrame, week_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
@@ -881,6 +1050,7 @@ def admin_page():
         )
 
     if st.button("Reload Latest Data from Google Sheets"):
+        clear_read_caches()
         st.rerun()
 
 
