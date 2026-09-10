@@ -1,46 +1,53 @@
 program week2_project
     implicit none
 
-    integer :: i, n
-    integer :: count_above
-    double precision :: x
+    integer, parameter :: max_data = 1000
+    integer :: i, n, count_above
+    double precision :: data(max_data)
     double precision :: sum, mean
+    double precision :: variance, stddev
     double precision :: maximum, minimum
     double precision :: threshold
 
     print *, 'Number of measurements:'
     read *, n
 
-    ! TODO 1: Stop the program if n <= 0.
+    ! TODO 1: Stop the program if n <= 0 or n > max_data.
+
+
+    ! Part A: Repeated input with DO
+    ! Part B: Store every input value in data(i).
+    ! TODO 2: Read n measurements into data(i).
+
+
+
+    ! TODO 3: Calculate sum and mean by looping over the array.
+
+
+
+    ! TODO 4: Calculate maximum and minimum.
+    ! Hint: initialize both values with data(1), then loop from i = 2.
+
+
+
+    ! TODO 5: Calculate population variance and standard deviation.
+    ! variance = sum((data(i)-mean)**2) / n
+
 
 
     print *, 'Enter threshold:'
     read *, threshold
 
-    sum = 0.0d0
     count_above = 0
+    print *, 'Index       Value'
 
-    do i = 1, n
-        print *, 'Enter measurement ', i
-        read *, x
+    ! TODO 6: Print the index and value of every measurement
+    ! greater than threshold, and update count_above.
 
-        ! TODO 2: Add x to sum.
-
-
-        ! TODO 3: Update maximum and minimum.
-        ! Hint: treat i == 1 separately.
-
-
-
-        ! TODO 4: Increase count_above when x > threshold.
-
-
-    end do
-
-    ! TODO 5: Calculate mean.
 
 
     print *, 'Mean            = ', mean
+    print *, 'Std. Dev.       = ', stddev
     print *, 'Maximum         = ', maximum
     print *, 'Minimum         = ', minimum
     print *, 'Above threshold = ', count_above
