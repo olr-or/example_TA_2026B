@@ -14,26 +14,18 @@ program week2_project
 
     ! TODO 1: Stop the program if n <= 0 or n > max_data.
 
-
     ! Part A: Repeated input with DO
     ! Part B: Store every input value in data(i).
+    
     ! TODO 2: Read n measurements into data(i).
 
-
-
     ! TODO 3: Calculate sum and mean by looping over the array.
-
-
 
     ! TODO 4: Calculate maximum and minimum.
     ! Hint: initialize both values with data(1), then loop from i = 2.
 
-
-
     ! TODO 5: Calculate population variance and standard deviation.
     ! variance = sum((data(i)-mean)**2) / n
-
-
 
     print *, 'Enter threshold:'
     read *, threshold
@@ -43,8 +35,6 @@ program week2_project
 
     ! TODO 6: Print the index and value of every measurement
     ! greater than threshold, and update count_above.
-
-
 
     print *, 'Mean            = ', mean
     print *, 'Std. Dev.       = ', stddev
