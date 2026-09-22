@@ -779,7 +779,7 @@ def student_page():
         st.session_state.student = None
         next_open = evaluation_window["next_open_at"]
         st.info(
-            "Peer Evaluation is currently closed. \n"
+            "Peer Evaluation is currently closed. \n\n"
             "It is available every Wednesday from 17:00 through Sunday 23:59 KST. \n\n"
             f"The next submission window opens on {next_open.strftime('%Y-%m-%d at %H:%M')} KST."
         )
