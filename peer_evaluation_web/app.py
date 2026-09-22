@@ -224,10 +224,9 @@ ROSTER_HEADER_ALIASES = {
 
 WEEK_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-EVALUATION_OPEN_AT = datetime(
-    2026, 9, 2, 17, 0,
-    tzinfo=ZoneInfo("Asia/Seoul"),
-)
+KST = ZoneInfo("Asia/Seoul")
+EVALUATION_OPEN_WEEKDAY = 2  # Wednesday (Monday=0)
+EVALUATION_OPEN_HOUR = 17
 
 
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
@@ -289,6 +288,55 @@ def current_week_context(now: datetime | None = None) -> tuple[str, str]:
     sheet_name = monday.isoformat()  # Google Sheet tab: 2026-08-17
     label = f"{monday.strftime('%Y.%m.%d')} ~ {sunday.strftime('%Y.%m.%d')}"
     return sheet_name, label
+
+
+def evaluation_window_context(now: datetime | None = None) -> dict:
+    """Return the weekly peer-evaluation submission window in KST.
+
+    Submissions are accepted from Wednesday 17:00 until Monday 00:00,
+    i.e. through Sunday 23:59.
+    """
+    if now is None:
+        now = datetime.now(KST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+
+    monday = (now - timedelta(days=now.weekday())).date()
+    wednesday = monday + timedelta(days=EVALUATION_OPEN_WEEKDAY)
+    next_monday = monday + timedelta(days=7)
+    sunday = next_monday - timedelta(days=1)
+
+    open_at = datetime(
+        wednesday.year,
+        wednesday.month,
+        wednesday.day,
+        EVALUATION_OPEN_HOUR,
+        0,
+        tzinfo=KST,
+    )
+    close_at = datetime(
+        next_monday.year,
+        next_monday.month,
+        next_monday.day,
+        0,
+        0,
+        tzinfo=KST,
+    )
+
+    next_open_at = open_at if now < open_at else open_at + timedelta(days=7)
+
+    return {
+        "is_open": open_at <= now < close_at,
+        "open_at": open_at,
+        "close_at": close_at,
+        "next_open_at": next_open_at,
+        "display_label": (
+            f"{wednesday.strftime('%Y.%m.%d')} 17:00 ~ "
+            f"{sunday.strftime('%Y.%m.%d')} 23:59"
+        ),
+    }
 
 
 def week_display(sheet_name: str, current_week: str | None = None) -> str:
@@ -702,7 +750,9 @@ def make_all_weeks_excel(roster: pd.DataFrame, week_names: list[str]) -> bytes:
 
 
 def student_page():
-    week_sheet, week_label = current_week_context()
+    now = datetime.now(KST)
+    week_sheet, _ = current_week_context(now)
+    evaluation_window = evaluation_window_context(now)
 
     st.markdown(
         """
@@ -718,20 +768,22 @@ def student_page():
         unsafe_allow_html=True,
     )
 
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
-
-    if now < EVALUATION_OPEN_AT:
-        st.session_state.student = None
-        st.info(
-            "Peer Evaluation will open on September 2, 2026 at 17:00 KST."
-        )
-        return
-
     st.markdown(
-        f"""<div class="week-card">🎀 <strong>Evaluation period</strong> &nbsp; {week_label}<br>
-        <span style="font-size:.9rem; opacity:.78;">A new evaluation week starts automatically every Monday at 00:00 KST.</span></div>""",
+        f"""<div class="week-card">🎀 <strong>Evaluation submission window</strong><br>
+        {evaluation_window["display_label"]} KST<br>
+        <span style="font-size:.9rem; opacity:.78;">Submissions are accepted every Wednesday from 17:00 through Sunday 23:59.</span></div>""",
         unsafe_allow_html=True,
     )
+
+    if not evaluation_window["is_open"]:
+        st.session_state.student = None
+        next_open = evaluation_window["next_open_at"]
+        st.info(
+            "Peer Evaluation is currently closed. "
+            "It is available every Wednesday from 17:00 through Sunday 23:59 KST. "
+            f"The next submission window opens on {next_open.strftime('%Y-%m-%d at %H:%M')} KST."
+        )
+        return
 
     roster = read_roster()
     if roster.empty:
@@ -760,7 +812,7 @@ def student_page():
                 if evaluator_has_submitted(student_id, week_sheet):
                     st.warning(
                         "You have already submitted this week's peer evaluation. "
-                        "You can submit again starting next Monday."
+                        "You can submit again during next week's window starting Wednesday at 17:00 KST."
                     )
                 else:
                     st.session_state.student = student
@@ -862,7 +914,7 @@ def student_page():
                     <div class="success-card">
                       <div class="success-icon">✓</div>
                       <div class="success-title">Evaluation Complete</div>
-                      <div class="success-copy">Thank you for your response. You can submit a new evaluation next week.</div>
+                      <div class="success-copy">Thank you for your response. You can submit a new evaluation during next week's window starting Wednesday at 17:00 KST.</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -968,8 +1020,8 @@ def admin_page():
 
     if selected_week == current_week:
         st.caption(
-            f"Current evaluation period: {current_week_label} · "
-            "A new date sheet starts automatically every Monday at 00:00 KST."
+            f"Current calendar week: {current_week_label} · "
+            "Student submissions are open Wednesday 17:00–Sunday 23:59 KST."
         )
 
     period_df = read_week_evaluations(selected_week)
