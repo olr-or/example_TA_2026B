@@ -548,6 +548,27 @@ def save_roster(df: pd.DataFrame) -> None:
     clear_read_caches()
 
 
+def save_roster_with_backup(df: pd.DataFrame) -> str | None:
+    """Archive the current roster before replacement, without modifying weekly evaluations."""
+    spreadsheet = open_spreadsheet()
+    ws = get_or_create_worksheet("students", rows=200, cols=8)
+    old_values = api_call_with_backoff(ws.get_all_values)
+    backup_name = None
+    if old_values and any(any(str(cell).strip() for cell in row) for row in old_values[1:]):
+        backup_name = "students_backup_" + datetime.now(KST).strftime("%Y%m%d_%H%M%S_%f")
+        backup = api_call_with_backoff(
+            lambda: spreadsheet.add_worksheet(
+                title=backup_name,
+                rows=max(200, len(old_values) + 10),
+                cols=max(8, max(map(len, old_values))),
+            )
+        )
+        api_call_with_backoff(lambda: backup.update("A1", old_values, value_input_option="RAW"))
+
+    save_roster(df)
+    return backup_name
+
+
 def evaluator_has_submitted(evaluator_id: str, week_sheet: str | None = None) -> bool:
     if week_sheet is None:
         week_sheet, _ = current_week_context()
@@ -986,15 +1007,71 @@ def admin_page():
             st.dataframe(new_roster, hide_index=True, use_container_width=True)
 
             existing_weeks = list_week_sheets()
-            if existing_weeks:
-                st.error(
-                    "The roster cannot be replaced because evaluation data already exists. "
-                    "This protection prevents roster mismatches during the course."
+            current_week, _ = current_week_context()
+            current_week_evaluations = read_week_evaluations(current_week)
+            current_week_has_submissions = not current_week_evaluations.empty
+
+            old_ids = set(roster["Student ID"].astype(str))
+            new_ids = set(new_roster["Student ID"].astype(str))
+            added_ids = new_ids - old_ids
+            removed_ids = old_ids - new_ids
+            old_by_id = roster.set_index("Student ID") if not roster.empty else pd.DataFrame()
+            new_by_id = new_roster.set_index("Student ID")
+            shared_ids = old_ids & new_ids
+            changed_ids = [
+                sid for sid in shared_ids
+                if any(
+                    str(old_by_id.at[sid, col]) != str(new_by_id.at[sid, col])
+                    for col in ["Group", "Name", "Department"]
                 )
-            elif st.button("Save This Roster to Google Sheets", type="primary"):
-                save_roster(new_roster)
-                st.success("The student roster has been saved.")
-                st.rerun()
+            ]
+            st.caption(
+                f"Roster changes: {len(added_ids)} added, "
+                f"{len(removed_ids)} removed, {len(changed_ids)} modified."
+            )
+
+            if current_week_has_submissions:
+                st.error(
+                    "The roster cannot be replaced because submissions already exist "
+                    f"for the current week ({current_week}). "
+                    "Export/finish the current week's evaluations before changing the roster."
+                )
+            else:
+                if existing_weeks:
+                    st.warning(
+                        "Past evaluation sheets will be preserved as-is. "
+                        "Their names and groups refer to the roster in effect when those "
+                        "evaluations were submitted. Replacing the roster can change "
+                        "historical missing-submission counts and exports. "
+                        "A backup of the previous roster will be created automatically."
+                    )
+                confirmed = st.checkbox(
+                    "I understand that the new roster will replace the active roster "
+                    "and historical evaluation sheets will remain unchanged.",
+                    key="confirm_roster_replacement",
+                ) if existing_weeks and not roster.empty else True
+                if st.button(
+                    "Save This Roster to Google Sheets",
+                    type="primary",
+                    disabled=not confirmed,
+                ):
+                    try:
+                        # Recheck at save time to reduce the risk of concurrent submissions.
+                        read_week_evaluations.clear()
+                        if not read_week_evaluations(current_week).empty:
+                            st.error("A current-week submission was detected. Roster replacement cancelled.")
+                        else:
+                            backup_name = save_roster_with_backup(new_roster)
+                            st.session_state["roster_save_message"] = (
+                                "The new roster has been saved. "
+                                + (f"Previous roster backup: {backup_name}" if backup_name else "")
+                            )
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"Could not save the new roster: {exc}")
+
+    if st.session_state.get("roster_save_message"):
+        st.success(st.session_state.pop("roster_save_message"))
 
     st.divider()
     st.subheader("2. Weekly Submission Status and Results")
